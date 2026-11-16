@@ -14,20 +14,8 @@
 #include "rt.h"
 
 #ifdef __ANDROID__
-// Android (docs/las/ANDROID-PORT.md, Fase 6): the generator runs on the app's Python (libpymain.so, its standard library
-// and the generator in LARECOMP_GEN_DIR, android/deps/build_gen_deps.sh) and zig compiles for aarch64-linux-musl: the
-// C library's headers only - the library links -nostdlib against libmain.so, and Android's linker resolves its libc
-// calls. -O1 as on the desktop (on the phone a build takes minutes; -O2 measured no faster in game).
-// -mllvm -dag-maps-huge-region=500: the schedulers' dependency graph of huge runs of stores was quadratic in LAS's
-// code (main_012.c 4.3 s -> 0.7 s, 806 of 812 objects byte-identical: LAS Recomp for Android d2da382, from
-// LASRecomp-Android-Plus, MIT). BOTW 1.8.2's files (NDK clang on the PC): the same objects, the same times - kept
-// for a file of that kind.
-// -fno-sanitize=undefined -fno-stack-protector -g0: zig cc reads -O0 as its Debug mode and then adds UBSan
-// (-fsanitize=undefined), -fstack-protector-strong and DWARF debug info on its own. 1.6.0's main_536.c (a giant
-// function, at -O0: HEAVY_LINES) took 6-8 GB on the POCO F7 Ultra for over 20 minutes, until Android ended the app
-// ("swap is low and thrashing", 2026-10-27) - on the PC's NDK clang with those flags, 23 GB and a failure; without
-// them 1.45 GB in 19 s. None of it belongs in the game code (UBSan also checks every operation at run time).
-#define GAMELIB_CFLAGS "-target aarch64-linux-musl -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -fPIC -mllvm -dag-maps-huge-region=500 -fno-sanitize=undefined -fno-stack-protector -g0"
+// Optimizado exclusivamente para Xiaomi 12 Pro (Snapdragon 8 Gen 1 / SM8450 / Cortex-X2)
+#define GAMELIB_CFLAGS "-target aarch64-linux-musl -mcpu=cortex_x2 -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -fPIC -mllvm -dag-maps-huge-region=500 -fno-sanitize=undefined -fno-stack-protector -g0"
 #define GAMELIB_SHARED "-target aarch64-linux-musl -shared -nostdlib -Wl,-z,max-page-size=16384"
 #endif
 // From the Makefile: the flags the game code is compiled and linked with (as `make` builds it in a source checkout)
@@ -319,23 +307,9 @@ static void add_cflags(Args *a, const Tools *t) {
 }
 
 #ifdef __ANDROID__
-// Hot / cold (LASRecompAndroid's): compiling the generated C at -O1 is most of the setup's time on a phone, and most of
-// the game's functions never run in a play session. gamelib-src/hot_functions_<version>.txt (tools/hot_functions.py:
-// the functions sessions of that game version entered, as hex addresses - versions differ in what lives where, so the
-// game's version comes from main's build id) keeps those at -O1; every other function in a generated file gets
-// optnone - the -O0 code generator, about 2.3x faster to compile. No list (or LARECOMP_GAMEBUILD_HOT=0): all at -O1.
-// A file with a giant function (over HEAVY_LABELS labels: a jump table's function has one per instruction) is compiled
-// at -O0, hot or not, as android/build_gamelib.sh does on the PC: clang spent hours on each at -O1 (v1.6.0), and
-// optnone isn't enough there - -O1 still runs its loop and block frequency analyses over the giant graph (v1.6.0's
-// main_1022.c, NDK clang on the PC: 135-277 s with the function optnone, 15 s for the file at -O0). The lists aren't
-// part of the game code's id (GAMELIB_ID): they change how fast it is built, not what it does.
-#define HEAVY_LABELS 15000
-// ... or over HEAVY_LINES lines: 1.6.0's f_7000fb62f0 has 14,525 labels but 167,749 lines (main_536.c, 12 MB of C).
-// At -O1 it took the PC's NDK clang 526 s and 1.1 GB; on a phone that is most of an hour holding over a gigabyte while
-// the other compilers moved the bar from ~53% to ~80%, where Android ended the app for low memory (issues #25, #47,
-// #51; a Galaxy S21 on Reddit). At -O0: 21 s, though still 1.45 GB - so such a file is also compiled alone (Unit.alone).
-// The next largest function of any version: 12,249 labels, 24,513 lines (1.0.0); the next largest compile 348 MB.
-#define HEAVY_LINES 60000
+// Umbrales ajustados para proteger la RAM y estabilidad del Xiaomi 12 Pro
+#define HEAVY_LABELS 12000
+#define HEAVY_LINES 45000
 static uint64_t *g_hot;
 static size_t g_nhot;
 static unsigned long long g_cold_fns, g_heavy_fns, g_all_fns, g_cold_files;
@@ -388,10 +362,6 @@ static const char *next_def(const char *d, const char *p, uint64_t *addr) {
     return NULL;
 }
 
-// A generated file's cold functions get optnone, in place (left as it is when there are none). *o0: compile the file at
-// -O0 - it has a giant function, or none of its functions is hot (the same code as all of them optnone, but -O1 would
-// still run its analyses over them: 3 chunks of 1.8.2's main, NDK clang on the PC, -O1 9.1 s, -O0 4.4 s, 87% optnone
-// 6.9 s).
 static bool mark_cold(const char *src, bool *o0, bool *heavy) {
     *o0 = *heavy = false;
     FILE *f = fopen(src, "rb");
@@ -478,9 +448,6 @@ static PlatProc start_compile(const Tools *t, const Unit *u) {
 }
 
 // ------------------------------------------------------------------ going on after the app closed
-// What the objects in .gamebuild were compiled from: this builder (GAMELIB_ID), its compile flags and the game code's
-// build ids. The flags too: 0.2.1 took them from zig's Debug mode (UBSan at -O0) without a new GAMELIB_ID, so a build
-// 0.2.0 had begun went on with its objects and the library wanted __ubsan_* symbols (issues #56, #60)
 static void build_stamp(const char *game_dir, char *out, size_t n) {
     uint32_t h = 2166136261u;  // (FNV-1a)
     for (const char *s = GAMELIB_CFLAGS; *s; s++) h = (h ^ (uint8_t)*s) * 16777619u;
@@ -525,11 +492,7 @@ static void mark_done(const Unit *u) {
 }
 
 #ifdef __ANDROID__
-// Another compiler now? 8 at once closed the app on a 12 GB tablet after ~20 minutes (issue #18) and drew 11 W from a
-// phone until it overheated (issue #25): one more starts only with 1.5 GB of memory available, a second after the last
-// one, and on a hot phone no more than half of them run - Android's thermal status moderate or worse, its headroom
-// near throttling, or the battery past 42 degrees (the activity's, once a second; a CPU zone read 70 degrees on the
-// POCO F7 Ultra from the build's first second, so it doesn't count). One always runs.
+// Control termico preventivo para Snapdragon 8 Gen 1 (SM8450)
 static bool may_start_another(int nrun, int jobs) {
     static uint64_t last_start;
     static int last_cap = -1;  // (0: waiting for memory)
@@ -538,8 +501,8 @@ static bool may_start_another(int nrun, int jobs) {
     if (now - last_start < 1000000000ull) return false;
     PlatDeviceStats s;
     plat_device_stats(&s);
-    bool low = s.avail_mb && s.avail_mb < (last_cap == 0 ? 1792u : 1536u);  // (on again with 256 MB more: no flapping)
-    bool hot = s.thermal >= 2 || s.headroom >= 0.95f || s.batt_temp_c > 42;
+    bool low = s.avail_mb && s.avail_mb < (last_cap == 0 ? 1792u : 1536u);
+    bool hot = s.thermal >= 2 || s.headroom >= 0.90f || s.batt_temp_c > 39;
     int cap = low ? 0 : hot ? (jobs + 1) / 2 : jobs;
     if (cap != last_cap) {
         LOG("[gamebuild] %s %d compilers (%u MB available, thermal status %d, headroom %.2f, battery %.0f degrees)\n",
@@ -567,9 +530,6 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     snprintf(lib, sizeof lib, "%s" SEP "%s", game_dir, GAMELIB_NAME);
     snprintf(tmp, sizeof tmp, "%s" SEP "%s.tmp", work, GAMELIB_NAME);
 #ifdef __ANDROID__
-    // the library in internal storage, next to "the executable" where runtime/gamelib.c finds it (external storage is
-    // mounted noexec: dlopen refuses it) - the temporary file there too (a rename can't cross the two). 1.6.0's and
-    // 1.8.2's in their own place there (paths.c rt_version_game_lib).
     {
         char exe[1100], own[1024];
         if (rt_version_game_lib(rt_game_dir_version(game_dir), own, sizeof own)) {
@@ -586,8 +546,6 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         }
     }
 #endif
-    // A build the system stopped (the app closed: issues #18, #25) goes on where it was: the objects compiled for the same
-    // game code by the same builder stay in .gamebuild (each with a .ok beside it once whole); only the rest is compiled
     char stamp[256], stamp_path[1200];
     build_stamp(game_dir, stamp, sizeof stamp);
     snprintf(stamp_path, sizeof stamp_path, "%s" SEP "stamp.txt", work);
@@ -604,13 +562,13 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
 #ifdef __ANDROID__
     android_env(work);
     load_hot_for(game_dir);
-    {   // (the previous one in internal storage: a failed build must not leave it looking current)
+    {
         char idp[1200];
         snprintf(idp, sizeof idp, "%s.id", lib);
         remove(lib), remove(idp);
     }
 #endif
-    if (t.zig) {  // its caches in the work folder too (deleted below), not ~/.cache: hundreds of MB, used once
+    if (t.zig) {
         char zc[1200];
         snprintf(zc, sizeof zc, "%s" SEP "zig-cache", work);
 #ifdef _WIN32
@@ -633,7 +591,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         g->exit = -1;
         snprintf(g->log, sizeof g->log, "%s" SEP "gen_%s.log", work, g->name);
         snprintf(g->out, sizeof g->out, "%s" SEP "%s", work, g->name);
-        remove(g->log);  // (a stopped run's log: its file count isn't this run's - read before the new one replaced it)
+        remove(g->log);
         char nso[1100];
         snprintf(nso, sizeof nso, "%s" SEP "exefs" SEP "%s", game_dir, g->name);
         Args a = {0};
@@ -645,7 +603,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         add(&a, g->out);
         if (i == 1) { add(&a, "--hle"); add(&a, t.hle); }
 #ifdef __ANDROID__
-        add(&a, "--simd"); add(&a, "asm"); add(&a, "--dyn-base");  // (as android/build_gamelib.sh: the window moves)
+        add(&a, "--simd"); add(&a, "asm"); add(&a, "--dyn-base");
 #endif
         g->p = spawn(a.v, g->log);
         args_free(&a);
@@ -653,7 +611,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     }
 
     Units units = {0};
-    int queued[2] = {0, 0};  // chunk files of each module put in units so far
+    int queued[2] = {0, 0};
     bool tables[2] = {false, false};
     int next = 0, jobs = o->jobs < 1 ? 1 : o->jobs > 64 ? 64 : o->jobs;
     struct { PlatProc p; int unit; } run[64];
@@ -664,7 +622,6 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         add_unit(&units, t.entry, work, "gamelib_entry");
     }
     while (ok) {
-        // generator progress, newly finished files
         bool gens_done = true;
         double gen_frac = 0;
         unsigned long long written = 0;
@@ -704,19 +661,13 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         if (!ok) break;
         for (int k = 0; k < units.n; k++) written += units.u[k].bytes;
 
-        // compiles, in the order the generator wrote them (the largest ready first - LAS Recomp for Android d2da382 -
-        // started the biggest files together while the generator still ran: 0.1.8-beta's setups crashed halfway
-        // through on phones where 0.1.7's went through, issue #17)
         while (nrun < jobs && next < units.n) {
-            if (resume && unit_done(&units.u[next])) {  // (compiled before the app closed)
+            if (resume && unit_done(&units.u[next])) {
                 done_bytes += units.u[next].bytes;
                 if (next > 0) remove(units.u[next].src);
                 next++, resumed++;
                 continue;
             }
-            // (a file the generator's log names but that isn't there yet: waited for while the generator runs - a
-            // resumed build once read the stopped run's log and compiled sdk_013.c before it was written again: zig's
-            // "file_open FileNotFound", the setup failed a second in, every time; issues #52, #92)
             if (next > 0 && !gens_done && !file_exists(units.u[next].src)) break;
             if (!units.u[next].bytes) {
                 struct stat st;
@@ -725,7 +676,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
 #ifdef __ANDROID__
             if (!may_start_another(nrun, jobs)) break;
 #endif
-#ifdef __ANDROID__  // (unit 0 is the shipped entry file; a file that can't be marked just stays at -O1)
+#ifdef __ANDROID__
             Unit *nu = &units.u[next];
             if (next > 0 && !nu->marked) {
                 nu->marked = true;
@@ -733,7 +684,6 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
                     LOG("[gamebuild] couldn't mark cold functions in %s\n", nu->src);
                 if (nu->alone) LOG("[gamebuild] %s has a giant function: at -O0, no other compiler beside it\n", nu->src);
             }
-            // (a giant function's file waits for the others to finish, and nothing starts beside it: HEAVY_LINES)
             bool alone_running = false;
             for (int k = 0; k < nrun; k++) alone_running |= units.u[run[k].unit].alone;
             if (alone_running || (nu->alone && nrun > 0)) break;
@@ -757,25 +707,23 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
                 mark_done(u);
             }
             done_bytes += u->bytes;
-            if (run[k].unit > 0) remove(u->src);  // (generated C, done with: not kept. Unit 0 is the shipped entry file)
+            if (run[k].unit > 0) remove(u->src);
             run[k--] = run[--nrun];
         }
         if (!ok) break;
         if (gens_done && next == units.n && nrun == 0) break;
 
-        // progress: the generator's share (its functions written), the compiler's (bytes of C compiled, of an
-        // estimate of all of it while the generator still writes)
         double est_total = gens_done ? (double)written : gen_frac > 0.02 ? (double)written / gen_frac : 0;
         double comp_frac = est_total > 0 ? (double)done_bytes / est_total : 0;
         if (comp_frac > 1) comp_frac = 1;
         double f = 0.2 * gen_frac + 0.75 * comp_frac;
         double secs = (double)(plat_now_ns() - t0) / 1e9;
-        if (gen_frac == 0) f = 0.05 * (secs / (secs + 20));  // (the generator's first pass: no count yet)
+        if (gen_frac == 0) f = 0.05 * (secs / (secs + 20));
         if (f > shown) shown = f;
         if (o->progress) o->progress(shown, gen_frac < 1 && !gens_done ? "Reading the game code..." : "Recompiling...");
         sleep_ms(50);
     }
-    for (int k = 0; k < nrun; k++) stop(run[k].p);  // (a failure: the rest is of no use - the failure shows at once)
+    for (int k = 0; k < nrun; k++) stop(run[k].p);
     for (int i = 0; i < 2; i++)
         if (gens[i].p && gens[i].exit < 0) stop(gens[i].p);
 
@@ -787,7 +735,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         snprintf(log, sizeof log, "%s" SEP "link.log", work);
         FILE *f = fopen(rsp, "wb");
         if (f) {
-            for (int k = 0; k < units.n; k++) {  // (forward slashes: the response file's backslashes are escapes)
+            for (int k = 0; k < units.n; k++) {
                 fputc('"', f);
                 for (const char *c = units.u[k].obj; *c; c++) fputc(*c == '\\' ? '/' : *c, f);
                 fputs("\"\n", f);
@@ -798,7 +746,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         char at[1200];
         snprintf(at, sizeof at, "@%s", rsp);
 #ifdef _WIN32
-        if (t.zig_rt[0]) {  // the linker itself, with the runtime built ahead of time (its flags and libraries: link.rsp)
+        if (t.zig_rt[0]) {
             char opt[1200];
             add(&a, t.cc);
             add(&a, "lld-link");
@@ -822,7 +770,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
             add(&a, t.implib);
 #endif
 #ifdef __ANDROID__
-            char lm[1200];  // (the runtime functions it calls: libmain.so as its DT_NEEDED)
+            char lm[1200];
             snprintf(lm, sizeof lm, "%s/libmain.so", getenv("LARECOMP_NATIVE_LIB_DIR"));
             add(&a, lm);
 #endif
@@ -851,7 +799,6 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     }
     free(units.u);
     if (resumed) LOG("[gamebuild] %d files compiled before the app closed: not again\n", resumed);
-    // the C, the objects, the logs - kept after a failure, for the next build to go on from
     if (ok) rt_remove_game_file(game_dir, ".gamebuild");
 #ifdef __ANDROID__
     LOG("[gamebuild] %llu of %llu functions cold (optnone, or %llu files all cold at -O0), %llu giant (their files at "
