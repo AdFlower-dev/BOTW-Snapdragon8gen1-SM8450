@@ -18,17 +18,26 @@ android {
     ndkVersion = "30.0.16248370"
 
     defaultConfig {
-        applicationId = "com.botwrecomp.android"
-        minSdk = 30
+        // ID exclusivo para Xiaomi 12 Pro (SM8450) - permite coexistir con la build oficial
+        applicationId = "com.botwrecomp.sm8450"
+        minSdk = 31
         targetSdk = 36
-        versionCode = 43
-        versionName = "0.4.4-beta"
+        versionCode = 44
+        versionName = "0.4.4-SM8450-X2"
         ndk {
             abiFilters += "arm64-v8a"
         }
         externalNativeBuild {
             cmake {
-                arguments += "-DBOTW_GEN_DIR=${gen.get().asFile.resolve("inc").absolutePath.replace('\\', '/')}"
+                arguments += listOf(
+                    "-DBOTW_GEN_DIR=${gen.get().asFile.resolve("inc").absolutePath.replace('\\', '/')}",
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DANDROID_ARM_NEON=ON",
+                    "-DTARGET_SOC_SM8450=ON"
+                )
+                // Flags exclusivas para Snapdragon 8 Gen 1 (Cortex-X2 + SVE2)
+                cFlags += listOf("-mcpu=cortex-x2+crypto+dotprod+fp16+rcpc+sve2", "-mtune=cortex-x2", "-O3", "-ffast-math")
+                cppFlags += listOf("-mcpu=cortex-x2+crypto+dotprod+fp16+rcpc+sve2", "-mtune=cortex-x2", "-O3", "-ffast-math")
             }
         }
     }
@@ -121,9 +130,6 @@ val prepareBotwRecompAndroid by tasks.registering {
         touchSkin.copyTo(out.resolve("assets/res/sheikah-touch-atlas.png"), overwrite = true)
         touchActions.copyTo(out.resolve("assets/res/touch-actions.png"), overwrite = true)
         icon.copyTo(out.resolve("res/mipmap-xxxhdpi/ic_launcher.png"), overwrite = true)
-        // the game code's builder (docs/las/ANDROID-PORT.md, Fase 6; android/deps/build_gen_deps.sh): its programs and
-        // libraries as native libraries (Android runs binaries only from nativeLibraryDir), the rest as assets/gen
-        // (runtime/gamebuild.c; unpacked by BOTWRecompAndroidActivity)
         val g = deps.resolve("gen")
         if (g.resolve("zig/libzig.so").exists()) {
             val jni = out.resolve("jniLibs/arm64-v8a")
@@ -141,8 +147,6 @@ val prepareBotwRecompAndroid by tasks.registering {
                 repo.resolve("runtime/$n").copyTo(a.resolve("gamelib-src/$n"), overwrite = true)
             repo.resolve("tools/gamelib_entry.c").copyTo(a.resolve("gamelib-src/gamelib_entry.c"), overwrite = true)
             repo.resolve("runtime/hle/hle_symbols.txt").copyTo(a.resolve("gamelib-src/hle_symbols.txt"), overwrite = true)
-            // (runtime/gamebuild.c hot / cold: only these functions at -O1, one list per game version; not part of the
-            // game code's id)
             for (f in hotLists) f.copyTo(a.resolve("gamelib-src/${f.name}"), overwrite = true)
             val digest = MessageDigest.getInstance("SHA-256")
             val buffer = ByteArray(65536)
